@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-File Organizer (GUI) - v3
-New: "Extension + Date" and "Extension only" schemes, e.g. xls/2025/06/file.xls
-Other features kept:
-- Choose source/destination
-- Copy or Move
-- Dry-run
-- Organize by Date, Category, Category + Date, Extension only, Extension + Date
-- Date source: Created or Modified
-- Sanitize filenames (Windows-invalid chars, trailing dot/space)
-- Add missing extension by signature detection (common types)
-- Avoid overwrites (auto " (1)", " (2)")
-- Long path support (Windows)
-- Log to UI and to organizer_log.txt in destination
+Organizzatore File (GUI) - v4
+Funzionalità:
+- Scegli sorgente/destinazione
+- Copia o Sposta
+- Simulazione (dry-run)
+- Organizza per Data, Categoria, Categoria + Data, Solo estensione, Estensione + Data
+- Sorgente data: Creazione o Modifica
+- Normalizza nomi file (caratteri non validi su Windows, punto/spazio finale)
+- Aggiungi estensione mancante tramite rilevamento firma file
+- Evita sovrascritture (auto " (1)", " (2)")
+- Supporto percorsi lunghi (Windows)
+- Esclusione file per pattern (es. *.tmp, thumbs.db)
+- Barra di progresso e interfaccia reattiva (multi-thread)
+- Log su UI e su organizer_log.txt nella destinazione
 """
 
 import os
+import sys
 import shutil
 import time
+import fnmatch
+import threading
 from pathlib import Path
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
+import ttkbootstrap as ttk
 
 IS_WINDOWS = os.name == "nt"
 
@@ -60,7 +65,7 @@ def unique_path(target: Path) -> Path:
         candidate = candidate.with_name(f"{stem} ({i}){suf}")
         i += 1
 
-# Categories (kept for Category schemes)
+# Categorie
 CATEGORY_MAP = {
     "Images": {'.jpg','.jpeg','.png','.gif','.bmp','.tif','.tiff','.webp','.heic','.heif','.svg','.raw','.cr2','.nef','.rw2'},
     "Videos": {'.mp4','.mov','.mkv','.avi','.wmv','.mts','.m2ts','.3gp','.m4v','.webm'},
@@ -78,7 +83,6 @@ def categorize(ext: str) -> str:
             return cat
     return "Other"
 
-# Signature-based extension detection for missing extensions
 def detect_ext_from_signature(path: Path) -> str | None:
     try:
         with open(longpath(path), 'rb', buffering=0) as f:
@@ -89,7 +93,6 @@ def detect_ext_from_signature(path: Path) -> str | None:
         return None
     ascii64 = head[:64]
 
-    # images
     if head.startswith(b'\xff\xd8\xff'):
         return '.jpg'
     if head.startswith(b'\x89PNG\r\n\x1a\n'):
@@ -98,17 +101,14 @@ def detect_ext_from_signature(path: Path) -> str | None:
         return '.gif'
     if head.startswith(b'BM'):
         return '.bmp'
-    # ISO-BMFF (mp4/mov/heic)
     if len(head) >= 12 and ascii64[4:8] == b'ftyp':
         if b'ftypheic' in ascii64 or b'ftypheif' in ascii64 or b'ftypheix' in ascii64 or b'ftyphevc' in ascii64 or b'ftypmif1' in ascii64 or b'ftypmsf1' in ascii64:
             return '.heic'
         if b'ftypqt' in ascii64:
             return '.mov'
         return '.mp4'
-    # video
     if head.startswith(bytes.fromhex('1A45DFA3')):
         return '.mkv'
-    # docs/archives
     if head.startswith(b'%PDF'):
         return '.pdf'
     if head.startswith(b'PK\x03\x04'):
@@ -132,7 +132,6 @@ def detect_ext_from_signature(path: Path) -> str | None:
         return '.7z'
     if head.startswith(bytes.fromhex('D0CF11E0A1B11AE1')):
         return '.doc'
-    # audio
     if head.startswith(b'ID3') or head[:2] == b'\xff\xfb':
         return '.mp3'
     if head.startswith(b'OggS'):
@@ -156,7 +155,6 @@ def add_extension_if_missing(path: Path, dry_run: bool) -> Path:
         os.replace(longpath(path), longpath(new_path))
     return new_path
 
-# Date helpers
 def get_dates(path: Path) -> tuple[float, float]:
     try:
         stat = path.stat()
@@ -177,12 +175,10 @@ def subfolder_by_date(path: Path, date_source: str, granularity: str) -> str:
         return f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d}"
     return f"{dt.year:04d}/{dt.month:02d}"
 
-# Core
 def process_file(src: Path, dest_root: Path, scheme: str, date_source: str, granularity: str, do_move: bool, sanitize: bool, add_missing_ext: bool, dry_run: bool, log):
     try:
         current = src
 
-        # Sanitize
         if sanitize:
             cleaned = sanitize_name(current.name)
             if cleaned != current.name:
@@ -191,17 +187,15 @@ def process_file(src: Path, dest_root: Path, scheme: str, date_source: str, gran
                     proposed = unique_path(proposed)
                 if not dry_run:
                     os.replace(longpath(current), longpath(proposed))
-                log(f"[RENAME] {current} -> {proposed}")
+                log(f"[RINOMINA] {current} -> {proposed}")
                 current = proposed
 
-        # Add extension if missing
         if add_missing_ext:
             new_current = add_extension_if_missing(current, dry_run)
             if new_current != current:
-                log(f"[EXT]    {current} -> {new_current}")
+                log(f"[EXT]      {current} -> {new_current}")
                 current = new_current
 
-        # Build destination path according to scheme
         ext = (current.suffix or "").lower().lstrip('.')
         category = categorize(current.suffix)
 
@@ -223,7 +217,7 @@ def process_file(src: Path, dest_root: Path, scheme: str, date_source: str, gran
             target_path = unique_path(target_path)
 
         if dry_run:
-            op = "MOVE" if do_move else "COPY"
+            op = "SPOSTA" if do_move else "COPIA"
             log(f"[{op}]   {current} -> {target_path}")
         else:
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -231,17 +225,35 @@ def process_file(src: Path, dest_root: Path, scheme: str, date_source: str, gran
                 shutil.move(longpath(current), longpath(target_path))
             else:
                 shutil.copy2(longpath(current), longpath(target_path))
-            log(f"OK {('MOVE' if do_move else 'COPY')}: {current} -> {target_path}")
+            log(f"OK {('SPOSTA' if do_move else 'COPIA')}: {current} -> {target_path}")
     except Exception as e:
         log(f"ERR: {src} -> {e}")
 
+
+# Mappe display italiano <-> valore interno inglese
+SCHEME_LABELS = {
+    "Extension + Date":    "Estensione + Data",
+    "Category + Date":     "Categoria + Data",
+    "Date only (YYYY/MM)": "Solo data (AAAA/MM)",
+    "Extension only":      "Solo estensione",
+    "Category only":       "Solo categoria",
+}
+SCHEME_LABELS_INV = {v: k for k, v in SCHEME_LABELS.items()}
+
+DATE_LABELS = {
+    "Created":  "Creazione",
+    "Modified": "Modifica",
+}
+DATE_LABELS_INV = {v: k for k, v in DATE_LABELS.items()}
+
+
 # GUI
-class OrganizerGUI(tk.Tk):
+class OrganizerGUI(ttk.Window):
     def __init__(self):
-        super().__init__()
-        self.title("File Organizer | By DF")
-        self.geometry("840x640")
-        self.minsize(780, 560)
+        super().__init__(themename="litera")
+        self.title("Organizzatore File | By DF")
+        self.geometry("880x700")
+        self.minsize(820, 600)
 
         # Vars
         self.src_var = tk.StringVar()
@@ -250,71 +262,120 @@ class OrganizerGUI(tk.Tk):
         self.dry_var  = tk.BooleanVar(value=True)
         self.sanitize_var = tk.BooleanVar(value=True)
         self.addext_var   = tk.BooleanVar(value=True)
-        self.date_var = tk.StringVar(value="Created" if IS_WINDOWS else "Modified")
+        self.date_var = tk.StringVar(value=DATE_LABELS["Created"] if IS_WINDOWS else DATE_LABELS["Modified"])
         self.gran_var = tk.StringVar(value="YYYY/MM")
-        self.scheme_var = tk.StringVar(value="Extension + Date")
+        self.scheme_var = tk.StringVar(value=SCHEME_LABELS["Extension + Date"])
+        self.exclude_var = tk.StringVar()
 
-        pad = {'padx': 8, 'pady': 6}
-        frm = ttk.Frame(self); frm.pack(fill='both', expand=True, **pad)
+        self._stop = False
 
+        pad = {'padx': 8, 'pady': 5}
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill='both', expand=True, padx=8, pady=(8, 0))
+
+        frm = ttk.Frame(notebook)
+        notebook.add(frm, text="  Organizzatore  ")
+
+        about_frm = ttk.Frame(notebook)
+        notebook.add(about_frm, text="  Info  ")
+        self._build_about(about_frm)
+
+        # Riga sorgente
         row = ttk.Frame(frm); row.pack(fill='x', **pad)
-        ttk.Label(row, text="Source folder:").pack(side='left')
-        ttk.Entry(row, textvariable=self.src_var, width=78).pack(side='left', padx=6)
-        ttk.Button(row, text="Browse", command=self.pick_src).pack(side='left')
+        ttk.Label(row, text="Cartella sorgente:").pack(side='left')
+        ttk.Entry(row, textvariable=self.src_var, width=72).pack(side='left', padx=6)
+        ttk.Button(row, text="Sfoglia", command=self.pick_src, bootstyle="secondary").pack(side='left')
 
+        # Riga destinazione
         row = ttk.Frame(frm); row.pack(fill='x', **pad)
-        ttk.Label(row, text="Destination:  ").pack(side='left')
-        ttk.Entry(row, textvariable=self.dst_var, width=78).pack(side='left', padx=6)
-        ttk.Button(row, text="Browse", command=self.pick_dst).pack(side='left')
+        ttk.Label(row, text="Destinazione:       ").pack(side='left')
+        ttk.Entry(row, textvariable=self.dst_var, width=72).pack(side='left', padx=6)
+        ttk.Button(row, text="Sfoglia", command=self.pick_dst, bootstyle="secondary").pack(side='left')
 
+        # Riga opzioni organizzazione
         row = ttk.Frame(frm); row.pack(fill='x', **pad)
-        ttk.Label(row, text="Organization:").pack(side='left')
+        ttk.Label(row, text="Organizzazione:").pack(side='left')
         ttk.Combobox(row, textvariable=self.scheme_var,
-                     values=["Extension + Date", "Category + Date", "Date only (YYYY/MM)",
-                             "Extension only", "Category only"],
-                     width=28, state="readonly").pack(side='left', padx=4)
+                     values=list(SCHEME_LABELS.values()),
+                     width=26, state="readonly").pack(side='left', padx=4)
+        ttk.Label(row, text="Data:").pack(side='left', padx=(10, 0))
+        ttk.Combobox(row, textvariable=self.date_var,
+                     values=list(DATE_LABELS.values()),
+                     width=12, state="readonly").pack(side='left', padx=4)
+        ttk.Label(row, text="Sottocartelle:").pack(side='left', padx=(10, 0))
+        ttk.Combobox(row, textvariable=self.gran_var,
+                     values=["YYYY/MM", "YYYY/MM/DD"],
+                     width=12, state="readonly").pack(side='left', padx=4)
 
-        ttk.Label(row, text="Date:").pack(side='left')
-        ttk.Combobox(row, textvariable=self.date_var, values=["Created", "Modified"], width=12, state="readonly").pack(side='left', padx=4)
-
-        ttk.Label(row, text="Subfolders:").pack(side='left')
-        ttk.Combobox(row, textvariable=self.gran_var, values=["YYYY/MM", "YYYY/MM/DD"], width=12, state="readonly").pack(side='left', padx=4)
-
+        # Riga opzioni operazione
         row = ttk.Frame(frm); row.pack(fill='x', **pad)
-        ttk.Radiobutton(row, text="Move", variable=self.move_var, value=True).pack(side='left', padx=4)
-        ttk.Radiobutton(row, text="Copy", variable=self.move_var, value=False).pack(side='left', padx=4)
-        ttk.Checkbutton(row, text="Dry run (no changes)", variable=self.dry_var).pack(side='left', padx=8)
-        ttk.Checkbutton(row, text="Sanitize filenames", variable=self.sanitize_var).pack(side='left', padx=8)
-        ttk.Checkbutton(row, text="Add missing extension", variable=self.addext_var).pack(side='left', padx=8)
+        ttk.Radiobutton(row, text="Sposta", variable=self.move_var, value=True).pack(side='left', padx=4)
+        ttk.Radiobutton(row, text="Copia",  variable=self.move_var, value=False).pack(side='left', padx=4)
+        ttk.Checkbutton(row, text="Simulazione (nessuna modifica)", variable=self.dry_var).pack(side='left', padx=8)
+        ttk.Checkbutton(row, text="Normalizza nomi file", variable=self.sanitize_var).pack(side='left', padx=8)
+        ttk.Checkbutton(row, text="Aggiungi estensione mancante", variable=self.addext_var).pack(side='left', padx=8)
 
+        # Riga esclusioni
         row = ttk.Frame(frm); row.pack(fill='x', **pad)
-        ttk.Button(row, text="Run", command=self.run).pack(side='left')
-        ttk.Button(row, text="Stop", command=self.stop).pack(side='left', padx=6)
-        ttk.Button(row, text="Clear Log", command=lambda: self.log_text.delete('1.0','end')).pack(side='left', padx=6)
+        ttk.Label(row, text="Escludi:              ").pack(side='left')
+        ttk.Entry(row, textvariable=self.exclude_var, width=55).pack(side='left', padx=6)
+        ttk.Label(row, text="(es. *.tmp, thumbs.db, desktop.ini)", foreground="#6c757d").pack(side='left')
 
-        self.log_text = tk.Text(frm, height=18, wrap='none')
-        self.log_text.pack(fill='both', expand=True, **pad)
+        # Riga pulsanti
+        row = ttk.Frame(frm); row.pack(fill='x', **pad)
+        self._btn_run = ttk.Button(row, text="Avvia", command=self.run, bootstyle="primary")
+        self._btn_run.pack(side='left')
+        ttk.Button(row, text="Interrompi", command=self.stop, bootstyle="danger-outline").pack(side='left', padx=6)
+        ttk.Button(row, text="Pulisci Log",
+                   command=lambda: self.log_text.delete('1.0', 'end'),
+                   bootstyle="secondary-outline").pack(side='left', padx=6)
+
+        # Barra di progresso
+        self.progress = ttk.Progressbar(frm, mode='determinate', bootstyle="primary-striped")
+        self.progress.pack(fill='x', padx=0, pady=(4, 0))
+
+        # Area log
+        self.log_text = tk.Text(
+            frm, height=16, wrap='none',
+            font=("Consolas", 9),
+            bg="#f8f9fa", fg="#212529",
+            relief="flat", borderwidth=1,
+        )
+        self.log_text.pack(fill='both', expand=True, pady=(6, 0))
         yscroll = ttk.Scrollbar(self.log_text, orient='vertical', command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=yscroll.set)
         yscroll.pack(side='right', fill='y')
 
-        self.status = tk.StringVar(value="Ready.")
-        ttk.Label(self, textvariable=self.status, anchor='w').pack(fill='x')
+        # Barra di stato
+        self.status = tk.StringVar(value="Pronto.")
+        ttk.Label(self, textvariable=self.status, anchor='w').pack(fill='x', padx=8, pady=(0, 4))
 
-        self._stop = False
+    def _build_about(self, parent):
+        ttk.Label(parent, text="Organizzatore File", font=("", 13, "bold")).pack(pady=(60, 4))
+        ttk.Label(parent, text="v4.0.0", foreground="#6c757d").pack()
+        ttk.Label(
+            parent,
+            text="\nOrganizza automaticamente i file in cartelle\nper estensione, categoria o data.\n",
+            justify='center',
+            foreground="#6c757d",
+        ).pack()
+        ttk.Separator(parent, orient='horizontal').pack(fill='x', padx=140, pady=12)
+        ttk.Label(parent, text="Made with \u2764\ufe0f by DF", foreground="#6c757d").pack()
 
     def pick_src(self):
-        d = filedialog.askdirectory(title="Select source folder")
+        d = filedialog.askdirectory(title="Seleziona cartella sorgente")
         if d: self.src_var.set(d)
 
     def pick_dst(self):
-        d = filedialog.askdirectory(title="Select destination folder")
+        d = filedialog.askdirectory(title="Seleziona cartella di destinazione")
         if d: self.dst_var.set(d)
 
     def log(self, msg: str):
         ts = time.strftime("%H:%M:%S")
         line = f"{ts}  {msg}\n"
-        self.log_text.insert('end', line); self.log_text.see('end')
+        self.log_text.insert('end', line)
+        self.log_text.see('end')
         dst = self.dst_var.get().strip()
         if dst:
             try:
@@ -324,51 +385,92 @@ class OrganizerGUI(tk.Tk):
             except Exception:
                 pass
 
+    # Metodi thread-safe per aggiornare la UI dal worker thread
+    def _safe_log(self, msg: str):
+        self.after(0, lambda: self.log(msg))
+
+    def _safe_status(self, msg: str):
+        self.after(0, lambda: self.status.set(msg))
+
+    def _safe_progress_step(self):
+        self.after(0, lambda: self.progress.step(1))
+
     def run(self):
         src = self.src_var.get().strip()
         dst = self.dst_var.get().strip()
         if not src or not dst:
-            messagebox.showerror("Error", "Please set both source and destination folders."); return
+            messagebox.showerror("Errore", "Impostare sia la cartella sorgente che quella di destinazione.")
+            return
         src_path = Path(src); dst_path = Path(dst)
         if not src_path.exists():
-            messagebox.showerror("Error", f"Source does not exist:\n{src_path}"); return
+            messagebox.showerror("Errore", f"La cartella sorgente non esiste:\n{src_path}")
+            return
         if src_path.resolve() == dst_path.resolve():
-            messagebox.showerror("Error", "Source and destination must be different."); return
+            messagebox.showerror("Errore", "Sorgente e destinazione devono essere cartelle diverse.")
+            return
 
         dry = self.dry_var.get()
         do_move = self.move_var.get()
         sanitize = self.sanitize_var.get()
         addext = self.addext_var.get()
-        date_source = self.date_var.get()
+        date_source = DATE_LABELS_INV.get(self.date_var.get(), self.date_var.get())
         gran = self.gran_var.get()
-        scheme = self.scheme_var.get()
+        scheme = SCHEME_LABELS_INV.get(self.scheme_var.get(), self.scheme_var.get())
+        raw_excl = self.exclude_var.get()
+        exclude_patterns = [p.strip().lower() for p in raw_excl.split(',') if p.strip()]
+
+        # Pre-conteggio per la barra di progresso
+        total = sum(len(files) for _, _, files in os.walk(src_path))
+        self.after(0, lambda: self.progress.configure(maximum=max(total, 1), value=0))
 
         self._stop = False
-        self.status.set("Running...")
-        self.log(f"START  src={src_path}  dst={dst_path}  op={'MOVE' if do_move else 'COPY'}  dry={dry}  scheme={scheme}  date={date_source}  sub={gran}  sanitize={sanitize}  addext={addext}")
+        self._btn_run.configure(state='disabled')
+        self.status.set("In esecuzione...")
+        self.log(f"INIZIO  src={src_path}  dest={dst_path}  op={'SPOSTA' if do_move else 'COPIA'}  simulazione={dry}  schema={scheme}  data={date_source}  sub={gran}  normalizza={sanitize}  estensione={addext}")
 
+        threading.Thread(
+            target=self._run_worker,
+            args=(src_path, dst_path, scheme, date_source, gran, do_move, sanitize, addext, dry, exclude_patterns),
+            daemon=True,
+        ).start()
+
+    def _run_worker(self, src_path, dst_path, scheme, date_source, gran, do_move, sanitize, addext, dry, exclude_patterns):
         count = 0
         for root, dirs, files in os.walk(src_path):
-            if self._stop: break
-            # Skip dest if nested
+            if self._stop:
+                break
             try:
                 if str(dst_path).startswith(str(src_path)) and str(Path(root)).startswith(str(dst_path)):
                     continue
             except Exception:
                 pass
             for fname in files:
-                if self._stop: break
-                process_file(Path(root)/fname, dst_path, scheme, date_source, gran, do_move, sanitize, addext, dry, self.log)
+                if self._stop:
+                    break
+                if exclude_patterns and any(fnmatch.fnmatch(fname.lower(), pat) for pat in exclude_patterns):
+                    continue
+                process_file(Path(root) / fname, dst_path, scheme, date_source, gran, do_move, sanitize, addext, dry, self._safe_log)
                 count += 1
+                self._safe_progress_step()
                 if count % 200 == 0:
-                    self.status.set(f"Processed {count} files..."); self.update_idletasks()
+                    self._safe_status(f"Elaborati {count} file...")
 
-        self.status.set(f"Finished. Processed {count} files.")
-        self.log(f"FINISH total={count}")
+        if self._stop:
+            self._safe_log("Arresto richiesto dall'utente.")
+            self.after(0, lambda: self.status.set("Interruzione completata."))
+        else:
+            self.after(0, lambda c=count: self.status.set(f"Completato. Elaborati {c} file."))
+            self._safe_log(f"FINE totale={count}")
+
+        self.after(0, lambda: [
+            self._btn_run.configure(state='normal'),
+            self.progress.configure(value=0),
+        ])
 
     def stop(self):
         self._stop = True
-        self.status.set("Stopping..."); self.log("STOP requested by user.")
+        self.status.set("Interruzione in corso...")
+
 
 def main():
     app = OrganizerGUI()
