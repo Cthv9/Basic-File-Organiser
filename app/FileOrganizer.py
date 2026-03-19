@@ -270,7 +270,16 @@ class OrganizerGUI(ttk.Window):
         self._stop = False
 
         pad = {'padx': 8, 'pady': 5}
-        frm = ttk.Frame(self); frm.pack(fill='both', expand=True, **pad)
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill='both', expand=True, padx=8, pady=(8, 0))
+
+        frm = ttk.Frame(notebook)
+        notebook.add(frm, text="  Organizzatore  ")
+
+        about_frm = ttk.Frame(notebook)
+        notebook.add(about_frm, text="  Info  ")
+        self._build_about(about_frm)
 
         # Riga sorgente
         row = ttk.Frame(frm); row.pack(fill='x', **pad)
@@ -341,6 +350,18 @@ class OrganizerGUI(ttk.Window):
         # Barra di stato
         self.status = tk.StringVar(value="Pronto.")
         ttk.Label(self, textvariable=self.status, anchor='w').pack(fill='x', padx=8, pady=(0, 4))
+
+    def _build_about(self, parent):
+        ttk.Label(parent, text="Organizzatore File", font=("", 13, "bold")).pack(pady=(60, 4))
+        ttk.Label(parent, text="v4.0.0", foreground="#6c757d").pack()
+        ttk.Label(
+            parent,
+            text="\nOrganizza automaticamente i file in cartelle\nper estensione, categoria o data.\n",
+            justify='center',
+            foreground="#6c757d",
+        ).pack()
+        ttk.Separator(parent, orient='horizontal').pack(fill='x', padx=140, pady=12)
+        ttk.Label(parent, text="Made with \u2764\ufe0f by DF", foreground="#6c757d").pack()
 
     def pick_src(self):
         d = filedialog.askdirectory(title="Seleziona cartella sorgente")
